@@ -6,7 +6,7 @@ Export Obsidian notes, selections, and folders as shareable images or PDFs with 
 
 <img src="docs/readme/Note_Image_Exporter_Demo.png" width="650" alt="An exported Obsidian note with Mermaid, math, code, watermark, and author info">
 
-Note Share Image Exporter keeps Obsidian rendering in the result, so a shared image can include content such as Mermaid diagrams, math, code blocks, callouts, metadata, and your current note styling.
+Note Share Image Exporter keeps Obsidian rendering in the result, so a shared image can include content such as Mermaid diagrams, math, code blocks, callouts, metadata, and your current note styling etc.
 
 ## Quick start
 
