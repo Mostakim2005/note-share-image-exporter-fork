@@ -1,12 +1,12 @@
 import { type App, type FrontMatterCache } from 'obsidian';
 import React, {
-  forwardRef, useEffect, useRef, useState, useImperativeHandle, useMemo,
+  forwardRef, useCallback, useEffect, useRef, useState, useImperativeHandle, useMemo,
 } from 'react';
 import { type WatermarkProps, Watermark } from '@pansy/react-watermark';
 import Metadata from './Metadata';
 import clsx from 'clsx';
 import { getRemoteImageUrl } from 'src/utils/capture';
-import { calculateSplitLines, getElementMeasures } from 'src/utils/split';
+import { calculateSplitLines, getElementMeasures, getSafeBreakPoints, snapBreakPosition } from 'src/utils/split';
 
 const lowerCase = (s: string) => s.replace(/([A-Z])/g, ' $1').toLowerCase().trim();
 
@@ -47,6 +47,9 @@ const Target = forwardRef<
     scale?: number;
     isProcessing: boolean;
     onSplitChange?: (positions: number[]) => void;
+    manualBreaks?: number[];
+    pageBreakEditing?: boolean;
+    onManualBreaksChange?: (positions: number[]) => void;
     onReady?: () => void;
   }
 >(({ frontmatter, setting, title, metadataMap, markdownEl, scale = 1, isProcessing, onSplitChange, onReady }, ref) => {
@@ -76,32 +79,65 @@ const Target = forwardRef<
 
     let elements;
     if (rootRef.current) {
-      elements = getElementMeasures(rootRef.current, setting.split.mode);
+      const measureMode = setting.format === 'pdf' && setting.split.mode === 'fixed'
+        ? 'auto'
+        : setting.split.mode;
+      elements = getElementMeasures(rootRef.current, measureMode);
     }
 
-    const lines = calculateSplitLines({
+    return calculateSplitLines({
       mode: setting.split.mode,
       height: setting.split.height,
       overlap: setting.split.overlap,
       totalHeight: rootHeight,
-    }, elements);
+      preserveBlocks: setting.format === 'pdf',
+    }, elements, manualBreaks.length ? manualBreaks : undefined);
+  }, [manualBreaks, setting.format, setting.split.height, setting.split.overlap, setting.split.mode, rootHeight]);
 
-    return lines;
-  }, [setting.split.height, setting.split.overlap, setting.split.mode, rootHeight]);
+  const safeBreakPoints = useMemo(() => {
+    if (!rootRef.current || !rootHeight) return [];
+    const measureMode: SplitMode = setting.split.mode === 'hr' || setting.split.mode === 'fixed' ? 'auto' : setting.split.mode;
+    const elements = getElementMeasures(rootRef.current, measureMode);
+    return getSafeBreakPoints(rootHeight, elements);
+  }, [rootHeight, setting.split.mode]);
 
   useEffect(() => {
     onSplitChange?.(splitLines);
   }, [onSplitChange, splitLines]);
 
-  const splitLineStyle = useMemo(() => ({
-    position: 'absolute',
-    left: 0,
-    right: 0,
-    height: `${2 / scale}px`,
-    borderTop: `${2 / scale}px dashed var(--interactive-accent)`,
-    opacity: 0.7,
-    pointerEvents: 'none',
-  } as const), [scale]);
+  const moveManualBreak = useCallback((index: number, clientY: number) => {
+    if (!rootRef.current || !onManualBreaksChange) return;
+    const rect = rootRef.current.getBoundingClientRect();
+    const contentY = (clientY - rect.top) / Math.max(scale, 0.01);
+    const current = manualBreaks[index];
+    if (current === undefined) return;
+    const previous = index > 0 ? manualBreaks[index - 1]! : 0;
+    const next = index < manualBreaks.length - 1 ? manualBreaks[index + 1]! : rootHeight;
+    const snapped = snapBreakPosition(contentY, safeBreakPoints, previous, next);
+    const nextBreaks = [...manualBreaks];
+    nextBreaks[index] = snapped;
+    nextBreaks.sort((a, b) => a - b);
+    onManualBreaksChange(nextBreaks);
+  }, [manualBreaks, onManualBreaksChange, rootHeight, safeBreakPoints, scale]);
+
+  const handleBreakPointerDown = useCallback((event: React.PointerEvent<HTMLDivElement>, index: number) => {
+    if (!pageBreakEditing || !onManualBreaksChange) return;
+    event.preventDefault();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    const move = (moveEvent: PointerEvent) => moveManualBreak(index, moveEvent.clientY);
+    const up = () => {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+      event.currentTarget.removeEventListener('pointermove', move as EventListener);
+      event.currentTarget.removeEventListener('pointerup', up as EventListener);
+    };
+    event.currentTarget.addEventListener('pointermove', move as EventListener);
+    event.currentTarget.addEventListener('pointerup', up as EventListener);
+  }, [moveManualBreak, onManualBreaksChange, pageBreakEditing]);
+
+  const removeManualBreak = useCallback((index: number) => {
+    if (!onManualBreaksChange) return;
+    onManualBreaksChange(manualBreaks.filter((_, currentIndex) => currentIndex !== index));
+  }, [manualBreaks, onManualBreaksChange]);
 
   useEffect(() => {
     if (!contentRef.current) {
@@ -232,6 +268,32 @@ const Target = forwardRef<
           position: 'relative',
         }}
       >
+        {!isProcessing && splitLines.map((line, index) => (
+          <div
+            key={`${index}-${Math.round(line)}`}
+            className={clsx('export-image-page-break', pageBreakEditing && 'is-editing')}
+            style={{ top: `${line}px` }}
+            role='separator'
+            aria-label={`Page break ${index + 1}`}
+            onPointerDown={event => handleBreakPointerDown(event, index)}
+            onDoubleClick={() => pageBreakEditing && removeManualBreak(index)}
+            tabIndex={pageBreakEditing ? 0 : -1}
+            onKeyDown={event => {
+              if (event.key === 'Delete' || event.key === 'Backspace') {
+                event.preventDefault();
+                removeManualBreak(index);
+              } else if (event.key === 'ArrowUp') {
+                event.preventDefault();
+                moveManualBreak(index, (rootRef.current?.getBoundingClientRect().top ?? 0) + line * Math.max(scale, 0.01) - 10 * Math.max(scale, 0.01));
+              } else if (event.key === 'ArrowDown') {
+                event.preventDefault();
+                moveManualBreak(index, (rootRef.current?.getBoundingClientRect().top ?? 0) + line * Math.max(scale, 0.01) + 10 * Math.max(scale, 0.01));
+              }
+            }}
+          >
+            {pageBreakEditing && <span className='export-image-page-break-handle'>Page {index + 2}</span>}
+          </div>
+        ))}
         <Watermark {...watermarkProps}>
           <div
             className={clsx(
@@ -306,16 +368,6 @@ const Target = forwardRef<
             </div>
           )
         }
-        {!isProcessing && splitLines.map((y, index) => (
-          <div
-            key={index}
-            style={{
-              ...splitLineStyle,
-              top: y,
-              zIndex: 10,
-            }}
-          />
-        ))}
       </div>
     </div>
   );
