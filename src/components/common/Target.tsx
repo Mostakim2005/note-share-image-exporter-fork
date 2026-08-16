@@ -52,7 +52,7 @@ const Target = forwardRef<
     onManualBreaksChange?: (positions: number[]) => void;
     onReady?: () => void;
   }
->(({ frontmatter, setting, title, metadataMap, markdownEl, scale = 1, isProcessing, onSplitChange, onReady }, ref) => {
+>(({ frontmatter, setting, title, metadataMap, markdownEl, scale = 1, isProcessing, onSplitChange, manualBreaks = [], pageBreakEditing = false, onManualBreaksChange, onReady }, ref) => {
   const [watermarkProps, setWatermarkProps] = useState<WatermarkProps>({});
   const [contentReady, setContentReady] = useState(false);
   const [watermarkReady, setWatermarkReady] = useState(false);
