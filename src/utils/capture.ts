@@ -2,14 +2,14 @@ import {
   Notice, Platform, requestUrl, type App, type TFile,
 } from 'obsidian';
 import { zipSync } from 'fflate';
-import JsPdf from 'jspdf';
 import * as htmlToImage from 'html-to-image';
 import L from '../L';
 import makeHTML from './makeHTML';
-import { fileToBase64, getMime } from '.';
+import { getMime } from '.';
 import { calculateSplitPositions, getElementMeasures } from './split';
 import { hasValidExportWidth } from './settings';
 import { embedInvisibleAssetMark } from './invisibleAssetMark';
+import { buildPdfFromElement, type PdfPagePosition } from './pdf';
 
 type ExportTarget = {
   element: HTMLElement;
@@ -98,25 +98,6 @@ async function getBlob(
   return blob;
 }
 
-async function makePdf(blob: Blob, el: HTMLElement) {
-  const dataUrl = await fileToBase64(blob);
-  const pdf = new JsPdf({
-    unit: 'in',
-    format: [el.clientWidth / 96, el.clientHeight / 96],
-    orientation: el.clientWidth > el.clientHeight ? 'l' : 'p',
-    compress: true,
-  });
-  pdf.addImage(
-    dataUrl,
-    'JPEG',
-    0,
-    0,
-    el.clientWidth / 96,
-    el.clientHeight / 96,
-  );
-  return pdf;
-}
-
 async function saveToVault(app: App, blob: Blob, filename: string) {
   const filePath = await app.fileManager.getAvailablePathForAttachment(filename);
   await app.vault.createBinary(filePath, await blob.arrayBuffer());
@@ -136,8 +117,8 @@ export async function createExportBlob(
     case 'png1':
       return getBlob(el, resolutionMode, format, assetMark);
     case 'pdf': {
-      const blob = await getBlob(el, resolutionMode, 'jpg', assetMark);
-      const pdf = await makePdf(blob, el);
+      const pages: PdfPagePosition[] = [{ startY: 0, height: el.clientHeight }];
+      const pdf = await buildPdfFromElement(el, pages, resolutionMode, assetMark);
       return new Blob([pdf.output('arraybuffer')], { type: 'application/pdf' });
     }
   }
@@ -150,19 +131,24 @@ export async function createSplitExportFiles(
   splitHeight: number,
   splitOverlap: number,
   splitMode: SplitMode,
+  manualBreaks: number[] | undefined,
   title: string,
   assetMark: ISettings['assetMark'],
 ): Promise<ExportBlobFile[]> {
   try {
     const totalHeight = target.contentElement.clientHeight;
-    const elements = getElementMeasures(target.contentElement, splitMode);
+    const measureMode: SplitMode = format === 'pdf' && splitMode === 'fixed' ? 'auto' : splitMode;
+    const elements = getElementMeasures(target.contentElement, measureMode);
 
     const splitPositions = calculateSplitPositions({
       mode: splitMode,
       height: splitHeight,
       overlap: splitOverlap,
       totalHeight,
-    }, elements);
+      // PDF uses fixed-width raster snapshots. Move breaks to safe block
+      // boundaries so tables, images and equations are not cropped.
+      preserveBlocks: format === 'pdf',
+    }, elements, manualBreaks);
 
     const scale = resolutionMode === '2x' ? 2 : resolutionMode === '3x' ? 3 : resolutionMode === '4x' ? 4 : 1;
     const pixelRatio = window.devicePixelRatio || 1;
@@ -170,50 +156,14 @@ export async function createSplitExportFiles(
     const finalScale = Math.min(scale * pixelRatio, MAX_SCALE);
 
     if (format === 'pdf') {
-      const fullCanvas = await htmlToImage.toCanvas(target.element, {
-        pixelRatio: finalScale,
-        backgroundColor: getSolidBackground(target.contentElement),
-      });
-
-      let pdf: JsPdf | undefined;
-
-      for (const { startY, height } of splitPositions) {
-        const pageCanvas = activeDocument.createElement('canvas');
-        pageCanvas.width = fullCanvas.width;
-        pageCanvas.height = Math.round(height * finalScale);
-
-        const ctx = pageCanvas.getContext('2d');
-        if (!ctx) {
-          failSave();
-        }
-        ctx.drawImage(
-          fullCanvas,
-          0, Math.round(startY * finalScale),
-          fullCanvas.width, pageCanvas.height,
-          0, 0,
-          pageCanvas.width, pageCanvas.height,
-        );
-
-        addAssetMark(pageCanvas, assetMark);
-        const dataUrl = pageCanvas.toDataURL('image/jpeg', 0.92);
-
-        if (!pdf) {
-          pdf = new JsPdf({
-            unit: 'in',
-            format: [target.element.clientWidth / 96, height / 96],
-            orientation: target.element.clientWidth > height ? 'l' : 'p',
-            compress: true,
-          });
-        } else {
-          pdf.addPage([target.element.clientWidth / 96, height / 96], target.element.clientWidth > height ? 'l' : 'p');
-        }
-
-        pdf.addImage(dataUrl, 'JPEG', 0, 0, target.element.clientWidth / 96, height / 96);
-      }
-
-      if (!pdf) {
-        failSave();
-      }
+      const pdf = await buildPdfFromElement(
+        target.contentElement,
+        splitPositions,
+        resolutionMode,
+        assetMark,
+        title,
+        splitHeight,
+      );
       return [{
         blob: new Blob([pdf.output('arraybuffer')], { type: 'application/pdf' }),
         filename: `${title.replaceAll(/\s+/g, '_')}.pdf`,
@@ -272,6 +222,7 @@ export async function createSplitExportBlob(
   splitHeight: number,
   splitOverlap: number,
   splitMode: SplitMode,
+  manualBreaks: number[] | undefined,
   title: string,
   assetMark: ISettings['assetMark'],
 ): Promise<Blob> {
@@ -282,6 +233,7 @@ export async function createSplitExportBlob(
     splitHeight,
     splitOverlap,
     splitMode,
+    manualBreaks,
     title,
     assetMark,
   );
@@ -448,6 +400,7 @@ export async function saveMultipleFiles(
           split.height,
           split.overlap,
           split.mode,
+          undefined,
           app,
           file.basename,
           settings.assetMark,
@@ -521,6 +474,7 @@ export async function saveAll(
   splitHeight: number,
   splitOverlap: number,
   splitMode: SplitMode,
+  manualBreaks: number[] | undefined,
   app: App,
   title: string,
   assetMark: ISettings['assetMark'],
@@ -533,6 +487,7 @@ export async function saveAll(
     splitHeight,
     splitOverlap,
     splitMode,
+    manualBreaks,
     title,
     assetMark,
   );

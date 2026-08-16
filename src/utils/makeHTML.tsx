@@ -75,6 +75,8 @@ export default async function makeHTML(
 
   const exportRoot = await waitForElement(container, '.export-image-root', 2000);
   await waitForTargetReady(targetReady);
+  exportRoot.dataset.exportSourcePath = file.path;
+  exportRoot.dataset.exportVaultName = app.vault.getName();
   return {
     element: exportRoot,
     cleanup: () => {
