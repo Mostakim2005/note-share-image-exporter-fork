@@ -213,6 +213,7 @@ export default class ExportImagePlugin extends Plugin {
           settings.split.height,
           settings.split.overlap,
           settings.split.mode,
+          undefined,
           file.basename,
           settings.assetMark,
         );
