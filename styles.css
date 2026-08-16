@@ -355,3 +355,48 @@ If your plugin does not need CSS, delete this file.
   0% { transform: rotate(0deg); }
   100% { transform: rotate(360deg); }
 }
+
+.export-image-page-break {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 2px;
+  border-top: 2px dashed var(--interactive-accent);
+  opacity: 0.72;
+  z-index: 50;
+  pointer-events: none;
+}
+
+.export-image-page-break.is-editing {
+  pointer-events: auto;
+  cursor: ns-resize;
+}
+
+.export-image-page-break-handle {
+  position: absolute;
+  right: 12px;
+  top: -12px;
+  padding: 2px 8px;
+  border: 1px solid var(--interactive-accent);
+  border-radius: var(--radius-s);
+  background: var(--background-primary);
+  color: var(--text-accent);
+  font-size: 11px;
+  line-height: 18px;
+  white-space: nowrap;
+  user-select: none;
+  box-shadow: var(--shadow-s);
+}
+
+.export-image-page-break-editor {
+  margin: 12px 0;
+  padding: 10px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-m);
+}
+
+.export-image-page-break-editor-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
