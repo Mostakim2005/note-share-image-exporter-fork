@@ -26,9 +26,15 @@ interface PdfOutlineApi {
   root?: { children: unknown[] };
 }
 
-interface PdfWithExtras extends JsPdf {
-  outline?: PdfOutlineApi;
-  viewerPreferences?: (options: Record<string, unknown>, doReset?: boolean) => JsPdf;
+type PdfViewerPreferencesApi = (options: Record<string, unknown>, doReset?: boolean) => JsPdf;
+
+function getPdfOutline(pdf: JsPdf): PdfOutlineApi | undefined {
+  return (pdf as unknown as { outline?: PdfOutlineApi }).outline;
+}
+
+function setPdfViewerPreferences(pdf: JsPdf, options: Record<string, unknown>): void {
+  const viewerPreferences = (pdf as unknown as { viewerPreferences?: PdfViewerPreferencesApi }).viewerPreferences;
+  viewerPreferences?.(options);
 }
 
 function pdfWidthIn(cssWidth: number): number {
@@ -161,7 +167,7 @@ function isExcludedTextNode(node: Text): boolean {
 }
 
 function addSelectableTextOverlay(
-  pdf: PdfWithExtras,
+  pdf: JsPdf,
   container: HTMLElement,
   pageStartY: number,
   pageHeight: number,
@@ -329,7 +335,7 @@ function resolveInternalLink(
 }
 
 function addPdfLinks(
-  pdf: PdfWithExtras,
+  pdf: JsPdf,
   container: HTMLElement,
   page: PdfRenderPage,
   pages: PdfRenderPage[],
@@ -350,7 +356,7 @@ function addPdfLinks(
       const top = (rect.top - containerRect.top) / domScale.y - page.startY;
       const bottom = (rect.bottom - containerRect.top) / domScale.y - page.startY;
       const clippedTop = Math.max(0, top);
-      const clippedBottom = Math.min(page.height, bottom);
+      const clippedBottom = Math.min(page.pageHeight, bottom);
       if (right <= left || clippedBottom <= clippedTop) continue;
 
       const x = left / 96;
@@ -371,13 +377,14 @@ function addPdfLinks(
   }
 }
 
-function addPdfOutline(pdf: PdfWithExtras, headings: HeadingDestination[]) {
-  if (!pdf.outline || headings.length === 0) return;
+function addPdfOutline(pdf: JsPdf, headings: HeadingDestination[]) {
+  const outline = getPdfOutline(pdf);
+  if (!outline || headings.length === 0) return;
   const stack: Array<{ level: number; node: unknown }> = [];
   for (const heading of headings) {
     while (stack.length && stack[stack.length - 1]!.level >= heading.level) stack.pop();
     const parent = stack.length ? stack[stack.length - 1]!.node : null;
-    const node = pdf.outline.add(parent, heading.title, { pageNumber: heading.pageNumber });
+    const node = outline.add(parent, heading.title, { pageNumber: heading.pageNumber });
     stack.push({ level: heading.level, node });
   }
 }
@@ -439,12 +446,12 @@ export async function buildPdfFromElement(
     format: [pdfWidthIn(element.clientWidth), pdfHeightIn(firstPage.pageHeight)],
     orientation: element.clientWidth > firstPage.pageHeight ? 'l' : 'p',
     compress: true,
-  }) as PdfWithExtras;
+  });
 
   if (title) {
     pdf.setProperties({ title });
   }
-  pdf.viewerPreferences?.({ NonFullScreenPageMode: 'UseOutlines', DisplayDocTitle: true });
+  setPdfViewerPreferences(pdf, { NonFullScreenPageMode: 'UseOutlines', DisplayDocTitle: true });
 
   const headings = getHeadingDestinations(element, pages);
 
