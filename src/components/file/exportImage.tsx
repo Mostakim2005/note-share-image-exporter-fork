@@ -111,6 +111,7 @@ export default async function (
         metadataMap={metadataMap}
         app={app}
         modalContainerEl={modal.containerEl}
+        filePath={file.path}
       />,
     );
 

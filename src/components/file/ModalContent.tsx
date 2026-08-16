@@ -6,6 +6,8 @@ import { TransformWrapper, TransformComponent } from 'react-zoom-pan-pinch';
 import { isCopiable } from 'src/imageFormatTester';
 import { copy, save, saveAll } from '../../utils/capture';
 import { hasValidExportWidth, syncUnifiedPadding } from '../../utils/settings';
+import { clearManualBreakState, loadManualBreakState, saveManualBreakState } from '../../utils/manualBreaks';
+import { getElementMeasures, getSafeBreakPoints, snapBreakPosition } from '../../utils/split';
 import L from '../../L';
 import Target, { type TargetRef } from '../common/Target';
 import FormItems from '../common/form/FormItems';
@@ -276,10 +278,11 @@ interface Props {
   metadataMap: Record<string, { type: MetadataType }>;
   title: string;
   modalContainerEl: HTMLElement;
+  filePath: string;
 }
 
 const ModalContent: FC<Props> = ({
-  markdownEl, settings, frontmatter, metadataMap, title, app, modalContainerEl,
+  markdownEl, settings, frontmatter, metadataMap, title, app, modalContainerEl, filePath,
 }) => {
   const [formData, setFormData] = useState<ISettings>(settings);
   const [availableFormats, setAvailableFormats] = useState<FileFormat[]>(formatAvailable);
@@ -358,6 +361,111 @@ const ModalContent: FC<Props> = ({
   const [rootHeight, setRootHeight] = useState(0);
   const [pages, setPages] = useState(1);
   const [scale, setScale] = useState(1);
+  const [manualBreaks, setManualBreaks] = useState<number[]>([]);
+  const [automaticBreaks, setAutomaticBreaks] = useState<number[]>([]);
+  const [manualBreaksEnabled, setManualBreaksEnabled] = useState(false);
+  const [pageBreakEditing, setPageBreakEditing] = useState(false);
+  const [manualBreaksLoaded, setManualBreaksLoaded] = useState(false);
+  const [storedContentHeight, setStoredContentHeight] = useState(0);
+
+  useEffect(() => {
+    const stored = loadManualBreakState(app, filePath);
+    setManualBreaks(stored?.breaks ?? []);
+    setManualBreaksEnabled(Boolean(stored?.enabled && stored.breaks.length));
+    setStoredContentHeight(stored?.contentHeight ?? 0);
+    setPageBreakEditing(false);
+    setManualBreaksLoaded(true);
+  }, [app, filePath]);
+
+  const persistManualBreaks = useCallback((breaks: number[], enabled = manualBreaksEnabled) => {
+    const normalized = Array.from(new Set(breaks.filter(point => point > 0 && point < rootHeight)))
+      .sort((a, b) => a - b);
+    setManualBreaks(normalized);
+    setStoredContentHeight(rootHeight);
+    saveManualBreakState(app, filePath, {
+      enabled,
+      breaks: normalized,
+      contentHeight: rootHeight,
+      updatedAt: Date.now(),
+    });
+  }, [app, filePath, manualBreaksEnabled, rootHeight]);
+
+  const handleManualBreaksChange = useCallback((breaks: number[]) => {
+    persistManualBreaks(breaks, true);
+  }, [persistManualBreaks]);
+
+  const startPageBreakEditing = useCallback(() => {
+    if (!root.current || formData.split.mode === 'none') return;
+    const seed = manualBreaks.length ? manualBreaks : automaticBreaks;
+    persistManualBreaks(seed, true);
+    setManualBreaksEnabled(true);
+    setPageBreakEditing(true);
+  }, [automaticBreaks, formData.split.mode, manualBreaks, persistManualBreaks]);
+
+  const addPageBreak = useCallback(() => {
+    if (!root.current || rootHeight <= 0) return;
+    const elements = getElementMeasures(
+      root.current.contentElement,
+      formData.split.mode === 'hr' || formData.split.mode === 'fixed' ? 'auto' : formData.split.mode,
+    );
+    const safePoints = getSafeBreakPoints(rootHeight, elements);
+    const points = [0, ...manualBreaks, rootHeight].sort((a, b) => a - b);
+    let bestStart = 0;
+    let bestEnd = rootHeight;
+    let bestSize = 0;
+    for (let i = 0; i < points.length - 1; i++) {
+      const start = points[i]!;
+      const end = points[i + 1]!;
+      if (end - start > bestSize) {
+        bestSize = end - start;
+        bestStart = start;
+        bestEnd = end;
+      }
+    }
+    const midpoint = (bestStart + bestEnd) / 2;
+    const snapped = snapBreakPosition(midpoint, safePoints, bestStart, bestEnd);
+    if (snapped <= bestStart || snapped >= bestEnd) return;
+    persistManualBreaks([...manualBreaks, snapped], true);
+    setManualBreaksEnabled(true);
+    setPageBreakEditing(true);
+  }, [formData.split.mode, manualBreaks, persistManualBreaks, rootHeight]);
+
+  const resetPageBreaks = useCallback(() => {
+    clearManualBreakState(app, filePath);
+    setManualBreaks([]);
+    setAutomaticBreaks([]);
+    setManualBreaksEnabled(false);
+    setStoredContentHeight(0);
+    setPageBreakEditing(false);
+  }, [app, filePath]);
+
+  useEffect(() => {
+    if (!manualBreaksLoaded || !manualBreaksEnabled || !root.current || rootHeight <= 0 || !manualBreaks.length) return;
+    const ratio = storedContentHeight > 0 ? rootHeight / storedContentHeight : 1;
+    const scaled = manualBreaks.map(point => point * ratio);
+    const elements = getElementMeasures(
+      root.current.contentElement,
+      formData.split.mode === 'hr' || formData.split.mode === 'fixed' ? 'auto' : formData.split.mode,
+    );
+    const safePoints = getSafeBreakPoints(rootHeight, elements);
+    const snapped = scaled.map((point, index, all) => snapBreakPosition(
+      point,
+      safePoints,
+      index > 0 ? all[index - 1]! : 0,
+      index < all.length - 1 ? all[index + 1]! : rootHeight,
+    ));
+    const changed = snapped.some((point, index) => Math.abs(point - manualBreaks[index]!) > 0.5);
+    if (changed || Math.abs(ratio - 1) > 0.02) {
+      setManualBreaks(snapped);
+      saveManualBreakState(app, filePath, {
+        enabled: true,
+        breaks: snapped,
+        contentHeight: rootHeight,
+        updatedAt: Date.now(),
+      });
+      setStoredContentHeight(rootHeight);
+    }
+  }, [app, filePath, formData.split.mode, manualBreaks, manualBreaksEnabled, manualBreaksLoaded, rootHeight, storedContentHeight]);
 
   const calculateScale = useCallback(() => {
     if (!root.current?.element || !previewOutRef.current) return 1;
@@ -392,11 +500,29 @@ const ModalContent: FC<Props> = ({
 
   const handleSplitChange = useCallback((positions: number[]) => {
     setPages(positions.length + 1);
-  }, []);
+    if (!manualBreaksEnabled) setAutomaticBreaks(positions);
+    if (!manualBreaksLoaded || manualBreaksEnabled || !root.current) return;
+    // Keep stored breaks usable after a note reflows: snap them to the current safe boundaries.
+    const elements = getElementMeasures(
+      root.current.contentElement,
+      formData.split.mode === 'hr' ? 'auto' : formData.split.mode,
+    );
+    const safePoints = getSafeBreakPoints(rootHeight, elements);
+    const sanitized = manualBreaks
+      .filter(point => point > 0 && point < rootHeight)
+      .map((point, index, all) => snapBreakPosition(
+        point,
+        safePoints,
+        index > 0 ? all[index - 1]! : 0,
+        index < all.length - 1 ? all[index + 1]! : rootHeight,
+      ));
+    if (sanitized.length) setManualBreaks(sanitized);
+  }, [formData.split.mode, manualBreaks, manualBreaksEnabled, manualBreaksLoaded, rootHeight]);
 
   useEffect(() => {
     if (formData.split.mode === 'none') {
       setPages(1);
+      setPageBreakEditing(false);
     }
   }, [formData.split.mode]);
 
@@ -468,6 +594,7 @@ const ModalContent: FC<Props> = ({
         formData.split.height,
         formData.split.overlap,
         formData.split.mode,
+        manualBreaksEnabled ? manualBreaks : undefined,
         app,
         title,
         formData.assetMark,
@@ -477,7 +604,7 @@ const ModalContent: FC<Props> = ({
     } finally {
       setProcessing(false);
     }
-  }, [root, formData.format, formData.resolutionMode, formData.split, app, title]);
+  }, [root, formData.format, formData.resolutionMode, formData.split, manualBreaks, manualBreaksEnabled, app, title]);
 
   return (
     <div className='export-image-preview-root'>
@@ -537,6 +664,9 @@ const ModalContent: FC<Props> = ({
                     scale={scale}
                     isProcessing={processing}
                     onSplitChange={handleSplitChange}
+                    manualBreaks={manualBreaksEnabled ? manualBreaks : undefined}
+                    pageBreakEditing={pageBreakEditing}
+                    onManualBreaksChange={handleManualBreaksChange}
                   ></Target>
                 </TransformComponent>
               </TransformWrapper>
@@ -551,6 +681,35 @@ const ModalContent: FC<Props> = ({
             settings={formData}
             app={app}
           />
+          {formData.split.mode !== 'none' && manualBreaksLoaded && (
+            <div className='export-image-page-break-editor'>
+              <div className='export-image-page-break-editor-actions'>
+                <button
+                  type='button'
+                  onClick={() => {
+                    if (pageBreakEditing) {
+                      setPageBreakEditing(false);
+                    } else {
+                      startPageBreakEditing();
+                    }
+                  }}
+                >
+                  {pageBreakEditing ? 'Done editing page breaks' : 'Edit page breaks'}
+                </button>
+                {manualBreaksEnabled && (
+                  <>
+                    <button type='button' onClick={addPageBreak}>Add page break</button>
+                    <button type='button' onClick={resetPageBreaks}>Reset to automatic</button>
+                  </>
+                )}
+              </div>
+              <div className='info-text'>
+                {manualBreaksEnabled
+                  ? 'Drag a page-break line. It snaps to safe content boundaries. Double-click a line to remove it.'
+                  : 'Page breaks follow the selected split mode until you enable manual editing.'}
+              </div>
+            </div>
+          )}
           {formData.split.mode !== 'none' && formData.split.mode !== 'hr' && <div className='info-text'>
             {L.splitInfo({ rootHeight, splitHeight: formData.split.height, pages })}
           </div>}
